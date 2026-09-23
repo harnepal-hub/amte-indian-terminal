@@ -67,7 +67,7 @@ def sync_trade_to_github(strat_key, trade_data):
     df_combined = pd.concat([df_existing, df_new], ignore_index=True) if not df_existing.empty else df_new
     csv_str = df_combined.to_csv(index=False)
     
-    df_combined.to_csv(filename, index=False) # Local fallback
+    df_combined.to_csv(filename, index=False) 
     if not GITHUB_TOKEN or not REPO_NAME: return
     
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
@@ -144,26 +144,21 @@ class UnifiedIndianEngine:
         self.check_daily_reset()
         
         for pair in self.pairs:
-            # Fetch data once per pair to avoid API bans
             df_15m = fetch_indian_data(pair, "15m", "5d")
             df_1h = fetch_indian_data(pair, "1h", "1mo")
             time.sleep(1) 
             
             if df_15m.empty or df_1h.empty or len(df_15m) < 105: continue
 
-            # --- Calculate Indicators ---
-            # 1H Macro Trend
             df_1h['EMA20'] = df_1h['close'].ewm(span=20, adjust=False).mean()
             df_1h['EMA50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
             macro_trend = "UP" if df_1h.iloc[-1]['EMA20'] > df_1h.iloc[-1]['EMA50'] else "DOWN"
 
-            # 15m Indicators
             df_15m['EMA100'] = df_15m['close'].ewm(span=100, adjust=False).mean()
             df_15m['MHULL'] = calculate_ehma(df_15m['close'], 16)
-            df_15m['SHULL_2'] = df_15m['MHULL'].shift(2) # For TW Orig
-            df_15m['SHULL_3'] = df_15m['MHULL'].shift(3) # For TW Tuned
+            df_15m['SHULL_2'] = df_15m['MHULL'].shift(2)
+            df_15m['SHULL_3'] = df_15m['MHULL'].shift(3)
             
-            # 15m Bollinger Bands (1.5 SD)
             df_15m['SMA20'] = df_15m['close'].rolling(20).mean()
             df_15m['STD20'] = df_15m['close'].rolling(20).std()
             df_15m['Upper_BB'] = df_15m['SMA20'] + (df_15m['STD20'] * 1.5)
@@ -178,26 +173,20 @@ class UnifiedIndianEngine:
             live_price = df_15m.iloc[-1]['close']
             atr = c_curr['ATR']
 
-            # --- Signal Generation ---
             signals = {"AMTE": None, "TW_ORIG": None, "TW_TUNED": None}
 
-            # Strategy A: AMTE Pullback
             if macro_trend == "UP" and c_curr['low'] <= c_curr['Lower_BB']: signals["AMTE"] = "LONG"
             elif macro_trend == "DOWN" and c_curr['high'] >= c_curr['Upper_BB']: signals["AMTE"] = "SHORT"
 
-            # Strategy B: TW Original
             if (c_prev['SHULL_2'] >= c_prev['MHULL']) and (c_curr['SHULL_2'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']): signals["TW_ORIG"] = "LONG"
             elif (c_prev['SHULL_2'] <= c_prev['MHULL']) and (c_curr['SHULL_2'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']): signals["TW_ORIG"] = "SHORT"
 
-            # Strategy C: TW Tuned
             if (c_prev['SHULL_3'] >= c_prev['MHULL']) and (c_curr['SHULL_3'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "LONG"
             elif (c_prev['SHULL_3'] <= c_prev['MHULL']) and (c_curr['SHULL_3'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "SHORT"
 
-            # --- Position Management ---
             for strat in self.strats:
                 pos = self.positions[strat][pair]
                 
-                # Active Trades Processing
                 if pos['status'] == 'ACTIVE':
                     ep = pos['limit_price']
                     gross = (live_price - ep) * pos['size'] if pos['side'] == 'LONG' else (ep - live_price) * pos['size']
@@ -215,7 +204,6 @@ class UnifiedIndianEngine:
                         elif live_price <= pos['tp']: self.close_trade(strat, pair, pos['tp'], "Limit TP")
                     continue
 
-                # Pending Orders Processing
                 if pos['status'] == 'PENDING_ENTRY':
                     if df_15m.iloc[-1]['low'] <= pos['limit_price'] if pos['side'] == 'LONG' else df_15m.iloc[-1]['high'] >= pos['limit_price']:
                         self.positions[strat][pair].update({'status': 'ACTIVE', 'entry_time': datetime.now(), 'max_dd_inr': 0.0})
@@ -223,7 +211,6 @@ class UnifiedIndianEngine:
                         send_telegram_alert(f"🟢 <b>[NSE {strat}] FILLED</b>\nStock: {pair}\nPrice: ₹{pos['limit_price']:,.2f}")
                     continue
 
-                # New Signal Intake
                 kill_active = self.daily_metrics[strat]['trades'] >= self.max_daily_trades or self.daily_metrics[strat]['pnl'] <= self.max_daily_loss
                 active_count = sum(1 for p in self.positions[strat].values() if p['status'] == 'ACTIVE')
                 
@@ -256,7 +243,6 @@ class UnifiedIndianEngine:
         self.positions[strat][pair] = {'status': 'NONE'}
         send_telegram_alert(f"🔔 <b>[NSE {strat}] CLOSED</b>\nStock: {pair}\nReason: {reason}\nNet: ₹{net_inr:,.2f}")
 
-
 # ==========================================
 # MASTER THREAD
 # ==========================================
@@ -271,7 +257,7 @@ class AppRunner:
             try:
                 self.engine.process_cycle()
                 time.sleep(60)
-            except Exception as e:
+            except:
                 time.sleep(60)
 
 @st.cache_resource
@@ -288,7 +274,22 @@ engine = runner.engine
 # STREAMLIT UI
 # ==========================================
 st.set_page_config(page_title="NSE Multi-Model Terminal", layout="wide")
-st.title("🇮🇳 NSE Multi-Model Terminal (Kotak Neo Sim)")
+st.title("🇮🇳 NSE Multi-Model Terminal")
+
+st.markdown("---")
+st.subheader("🔎 Live Strategy Visualizer")
+ui_pair = st.selectbox("Select Asset to Monitor:", PAIRS)
+df_chart = fetch_indian_data(ui_pair, "15m", "5d")
+
+if not df_chart.empty and len(df_chart) > 50:
+    df_chart['EMA100'] = df_chart['close'].ewm(span=100, adjust=False).mean()
+    df_chart['MHULL'] = calculate_ehma(df_chart['close'], 16)
+    df_chart['SHULL_2'] = df_chart['MHULL'].shift(2)
+    df_chart['SHULL_3'] = df_chart['MHULL'].shift(3)
+    df_chart['SMA20'] = df_chart['close'].rolling(20).mean()
+    df_chart['STD20'] = df_chart['close'].rolling(20).std()
+    df_chart['Upper_BB'] = df_chart['SMA20'] + (df_chart['STD20'] * 1.5)
+    df_chart['Lower_BB'] = df_chart['SMA20'] - (df_chart['STD20'] * 1.5)
 
 tabs = st.tabs(["Strategy A (AMTE)", "Strategy B (TW Orig)", "Strategy C (TW Tuned)"])
 
@@ -305,10 +306,38 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
         c3.metric("Today's Trades", f"{engine.daily_metrics[strat]['trades']} / {engine.max_daily_trades}")
         c4.metric("Today's PnL", f"₹{engine.daily_metrics[strat]['pnl']:,.2f}")
 
+        if not df_chart.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['open'], high=df_chart['high'], low=df_chart['low'], close=df_chart['close'], name="15m Candles"))
+            
+            if strat == "AMTE":
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Upper_BB'], line=dict(color='rgba(255, 0, 0, 0.5)', width=1, dash='dot'), name="Upper BB (1.5)"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Lower_BB'], line=dict(color='rgba(0, 255, 0, 0.5)', width=1, dash='dot'), name="Lower BB (1.5)"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA20'], line=dict(color='rgba(255, 255, 255, 0.3)', width=1), name="SMA 20"))
+            elif strat == "TW_ORIG":
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MHULL'], line=dict(color='#0018F3', width=2), name="MHULL"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SHULL_2'], line=dict(color='#00E676', width=1.5, dash='dot'), name="SHULL (2 Lag)"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA100'], line=dict(color='#9C27B0', width=2), name="EMA 100"))
+            elif strat == "TW_TUNED":
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MHULL'], line=dict(color='#0018F3', width=2), name="MHULL"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SHULL_3'], line=dict(color='#00E676', width=1.5, dash='dot'), name="SHULL (3 Lag)"))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA100'], line=dict(color='#9C27B0', width=2), name="EMA 100"))
+
+            pos = engine.positions[strat][ui_pair]
+            if pos['status'] == 'PENDING_ENTRY': 
+                fig.add_hline(y=pos['limit_price'], line_dash="dot", line_color="#BDBDBD", annotation_text="Limit")
+            elif pos['status'] == 'ACTIVE':
+                fig.add_hline(y=pos['limit_price'], line_dash="solid", line_color="#FF9800", annotation_text="Entry")
+                fig.add_hline(y=pos['tp'], line_dash="dash", line_color="#00E676", annotation_text="TP")
+                fig.add_hline(y=pos['sl'], line_dash="dash", line_color="#FF5252", annotation_text="SL")
+
+            fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10), title=f"{ui_pair} - {strat} Overlays")
+            st.plotly_chart(fig, use_container_width=True)
+
         st.subheader(f"📜 {strat} Trade Ledger")
         if df_led.empty or len(df_led) == 0:
-            # Force empty dataframe to show columns properly
             st.dataframe(pd.DataFrame(columns=LEDGER_COLUMNS), use_container_width=True)
         else:
             st.download_button(label=f"📥 Download {strat} CSV", data=df_led.to_csv(index=False).encode('utf-8'), file_name=LEDGERS[strat], mime='text/csv')
             st.dataframe(df_led.sort_index(ascending=False), use_container_width=True)
+                                                                                             
