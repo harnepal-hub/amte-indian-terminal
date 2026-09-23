@@ -33,7 +33,6 @@ LEDGERS = {
 
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
-
 LEDGER_COLUMNS = ['Time', 'Stock', 'Strategy', 'Side', 'Qty', 'Entry', 'Exit', 'Reason', 'Gross_INR', 'Kotak_Friction_INR', 'Net_PnL_INR', 'Max_DD_INR']
 
 def send_telegram_alert(message):
@@ -99,24 +98,17 @@ def fetch_indian_data(ticker, interval, period="5d"):
     except: return pd.DataFrame()
 
 def calculate_indian_costs(entry_price, exit_price, quantity, side="LONG"):
-    # Accurately isolate Buy and Sell sides for Indian Tax laws
     buy_turnover = (entry_price * quantity) if side == "LONG" else (exit_price * quantity)
     sell_turnover = (exit_price * quantity) if side == "LONG" else (entry_price * quantity)
     total_turnover = buy_turnover + sell_turnover
 
-    brokerage = 0.0  # Kotak Neo Trade Free Plan
-    
-    # Intraday (MIS) Statutory Charges
-    stt = 0.00025 * sell_turnover          # 0.025% strictly on sell side
-    exchange_charges = 0.0000325 * total_turnover # NSE updated Oct 2024 charge
-    stamp_duty = 0.00003 * buy_turnover    # 0.003% strictly on buy side
-    sebi_fees = 0.000001 * total_turnover  # ₹10 per crore
-
-    # GST is 18% applied only to Brokerage, Exchange, and SEBI charges
+    brokerage = 0.0  
+    stt = 0.00025 * sell_turnover          
+    exchange_charges = 0.0000325 * total_turnover 
+    stamp_duty = 0.00003 * buy_turnover    
+    sebi_fees = 0.000001 * total_turnover  
     gst = 0.18 * (brokerage + exchange_charges + sebi_fees)
-
-    total_friction = brokerage + stt + exchange_charges + stamp_duty + sebi_fees + gst
-    return total_friction
+    return brokerage + stt + exchange_charges + stamp_duty + sebi_fees + gst
 
 def calculate_ehma(series, length=16):
     half_len = max(1, length // 2)
@@ -127,7 +119,7 @@ def calculate_ehma(series, length=16):
     return diff.ewm(span=sqrt_len, adjust=False).mean()
 
 # ==========================================
-# UNIFIED TRADING ENGINE (ALL 3 STRATEGIES)
+# UNIFIED TRADING ENGINE 
 # ==========================================
 class UnifiedIndianEngine:
     def __init__(self, pairs):
@@ -152,7 +144,6 @@ class UnifiedIndianEngine:
 
     def process_cycle(self):
         self.check_daily_reset()
-        
         for pair in self.pairs:
             df_15m = fetch_indian_data(pair, "15m", "5d")
             df_1h = fetch_indian_data(pair, "1h", "1mo")
@@ -182,15 +173,12 @@ class UnifiedIndianEngine:
             c_curr = df_15m.iloc[-2]
             live_price = df_15m.iloc[-1]['close']
             atr = c_curr['ATR']
-
             signals = {"AMTE": None, "TW_ORIG": None, "TW_TUNED": None}
 
             if macro_trend == "UP" and c_curr['low'] <= c_curr['Lower_BB']: signals["AMTE"] = "LONG"
             elif macro_trend == "DOWN" and c_curr['high'] >= c_curr['Upper_BB']: signals["AMTE"] = "SHORT"
-
             if (c_prev['SHULL_2'] >= c_prev['MHULL']) and (c_curr['SHULL_2'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']): signals["TW_ORIG"] = "LONG"
             elif (c_prev['SHULL_2'] <= c_prev['MHULL']) and (c_curr['SHULL_2'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']): signals["TW_ORIG"] = "SHORT"
-
             if (c_prev['SHULL_3'] >= c_prev['MHULL']) and (c_curr['SHULL_3'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "LONG"
             elif (c_prev['SHULL_3'] <= c_prev['MHULL']) and (c_curr['SHULL_3'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "SHORT"
 
@@ -228,10 +216,8 @@ class UnifiedIndianEngine:
                     limit_p = c_curr['Lower_BB'] if signals[strat] == "LONG" and strat == "AMTE" else live_price
                     limit_p = c_curr['Upper_BB'] if signals[strat] == "SHORT" and strat == "AMTE" else limit_p
                     
-                    # Tightened for Indian Intraday Volatility (1:2 Risk/Reward)
                     sl = limit_p - (atr * 1.0) if signals[strat] == "LONG" else limit_p + (atr * 1.0)
                     tp = limit_p + (atr * 2.0) if signals[strat] == "LONG" else limit_p - (atr * 2.0)
-                    
                     size = max(1, int(RISK_PER_TRADE_INR / max(0.1, abs(limit_p - sl))))
                     
                     self.positions[strat][pair] = {'status': 'PENDING_ENTRY', 'side': signals[strat], 'limit_price': limit_p, 'sl': sl, 'tp': tp, 'size': size, 'max_dd_inr': 0.0}
@@ -245,7 +231,6 @@ class UnifiedIndianEngine:
         net_inr = gross - costs
         self.daily_metrics[strat]['pnl'] += net_inr
 
-        # Timezone fix: Convert logging to IST
         ist = pytz.timezone('Asia/Kolkata')
         trade_record = {
             'Time': datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': strat, 'Side': pos['side'], 'Qty': qty,
@@ -257,39 +242,45 @@ class UnifiedIndianEngine:
         self.positions[strat][pair] = {'status': 'NONE'}
         send_telegram_alert(f"🔔 <b>[NSE {strat}] CLOSED</b>\nStock: {pair}\nReason: {reason}\nNet: ₹{net_inr:,.2f}")
 
-# ==========================================
-# MASTER THREAD
-# ==========================================
-class AppRunner:
-    def __init__(self):
-        self.engine = UnifiedIndianEngine(PAIRS)
 
-    def loop(self):
+# ==========================================
+# MASTER THREAD (WITH ANTI-ZOMBIE LOCK)
+# ==========================================
+@st.cache_resource
+def get_engine():
+    return UnifiedIndianEngine(PAIRS)
+
+engine = get_engine()
+
+@st.cache_resource
+def start_background_loop(_engine):
+    # 1. STRICT LOCK: Check if the thread already exists
+    for t in threading.enumerate():
+        if t.name == "AlgoTraderThread":
+            return t # Abort spawning a duplicate
+
+    # 2. If it doesn't exist, safely spawn ONE thread
+    def loop():
         time.sleep(5)
-        send_telegram_alert("🚀 <b>NSE Multi-Model Engine Online</b>")
+        send_telegram_alert("🚀 <b>NSE Engine Online (Anti-Zombie Lock Active)</b>")
         while True:
             try:
-                self.engine.process_cycle()
+                _engine.process_cycle()
                 time.sleep(60)
             except:
                 time.sleep(60)
-
-@st.cache_resource
-def start_engine():
-    runner = AppRunner()
-    t = threading.Thread(target=runner.loop, daemon=True)
+                
+    t = threading.Thread(target=loop, daemon=True, name="AlgoTraderThread")
     t.start()
-    return runner
+    return t
 
-runner = start_engine()
-engine = runner.engine
+start_background_loop(engine)
 
 # ==========================================
 # STREAMLIT UI
 # ==========================================
 st.set_page_config(page_title="NSE Multi-Model Terminal", layout="wide")
 st.title("🇮🇳 NSE Multi-Model Terminal")
-
 st.markdown("---")
 st.subheader("🔎 Live Strategy Visualizer")
 ui_pair = st.selectbox("Select Asset to Monitor:", PAIRS)
@@ -354,3 +345,4 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
         else:
             st.download_button(label=f"📥 Download {strat} CSV", data=df_led.to_csv(index=False).encode('utf-8'), file_name=LEDGERS[strat], mime='text/csv')
             st.dataframe(df_led.sort_index(ascending=False), use_container_width=True)
+        
