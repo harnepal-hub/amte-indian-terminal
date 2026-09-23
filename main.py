@@ -5,6 +5,7 @@ import threading
 import warnings
 import math
 from datetime import datetime, date
+import pytz
 import requests
 import pandas as pd
 import numpy as np
@@ -98,15 +99,24 @@ def fetch_indian_data(ticker, interval, period="5d"):
     except: return pd.DataFrame()
 
 def calculate_indian_costs(entry_price, exit_price, quantity, side="LONG"):
-    turnover = (entry_price + exit_price) * quantity
-    sell_turnover = (exit_price if side == "LONG" else entry_price) * quantity
-    brokerage = 0.0  
-    stt = 0.00025 * sell_turnover          
-    exchange_charges = 0.0000345 * turnover
-    stamp_duty = 0.00003 * (entry_price * quantity)
-    sebi_fees = 0.000001 * turnover
+    # Accurately isolate Buy and Sell sides for Indian Tax laws
+    buy_turnover = (entry_price * quantity) if side == "LONG" else (exit_price * quantity)
+    sell_turnover = (exit_price * quantity) if side == "LONG" else (entry_price * quantity)
+    total_turnover = buy_turnover + sell_turnover
+
+    brokerage = 0.0  # Kotak Neo Trade Free Plan
+    
+    # Intraday (MIS) Statutory Charges
+    stt = 0.00025 * sell_turnover          # 0.025% strictly on sell side
+    exchange_charges = 0.0000325 * total_turnover # NSE updated Oct 2024 charge
+    stamp_duty = 0.00003 * buy_turnover    # 0.003% strictly on buy side
+    sebi_fees = 0.000001 * total_turnover  # ₹10 per crore
+
+    # GST is 18% applied only to Brokerage, Exchange, and SEBI charges
     gst = 0.18 * (brokerage + exchange_charges + sebi_fees)
-    return brokerage + stt + exchange_charges + stamp_duty + sebi_fees + gst
+
+    total_friction = brokerage + stt + exchange_charges + stamp_duty + sebi_fees + gst
+    return total_friction
 
 def calculate_ehma(series, length=16):
     half_len = max(1, length // 2)
@@ -218,8 +228,10 @@ class UnifiedIndianEngine:
                     limit_p = c_curr['Lower_BB'] if signals[strat] == "LONG" and strat == "AMTE" else live_price
                     limit_p = c_curr['Upper_BB'] if signals[strat] == "SHORT" and strat == "AMTE" else limit_p
                     
-                    sl = limit_p - (atr * 2.0) if signals[strat] == "LONG" else limit_p + (atr * 2.0)
-                    tp = limit_p + (atr * 4.0) if signals[strat] == "LONG" else limit_p - (atr * 4.0)
+                    # Tightened for Indian Intraday Volatility (1:2 Risk/Reward)
+                    sl = limit_p - (atr * 1.0) if signals[strat] == "LONG" else limit_p + (atr * 1.0)
+                    tp = limit_p + (atr * 2.0) if signals[strat] == "LONG" else limit_p - (atr * 2.0)
+                    
                     size = max(1, int(RISK_PER_TRADE_INR / max(0.1, abs(limit_p - sl))))
                     
                     self.positions[strat][pair] = {'status': 'PENDING_ENTRY', 'side': signals[strat], 'limit_price': limit_p, 'sl': sl, 'tp': tp, 'size': size, 'max_dd_inr': 0.0}
@@ -233,8 +245,10 @@ class UnifiedIndianEngine:
         net_inr = gross - costs
         self.daily_metrics[strat]['pnl'] += net_inr
 
+        # Timezone fix: Convert logging to IST
+        ist = pytz.timezone('Asia/Kolkata')
         trade_record = {
-            'Time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': strat, 'Side': pos['side'], 'Qty': qty,
+            'Time': datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': strat, 'Side': pos['side'], 'Qty': qty,
             'Entry': round(ep, 2), 'Exit': round(exec_price, 2), 'Reason': reason,
             'Gross_INR': round(gross, 2), 'Kotak_Friction_INR': round(costs, 2), 
             'Net_PnL_INR': round(net_inr, 2), 'Max_DD_INR': round(pos.get('max_dd_inr', 0.0), 2)
@@ -340,4 +354,3 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
         else:
             st.download_button(label=f"📥 Download {strat} CSV", data=df_led.to_csv(index=False).encode('utf-8'), file_name=LEDGERS[strat], mime='text/csv')
             st.dataframe(df_led.sort_index(ascending=False), use_container_width=True)
-                                                                                             
