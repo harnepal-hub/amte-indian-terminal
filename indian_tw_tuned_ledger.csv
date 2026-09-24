@@ -1,1 +1,2 @@
 Time,Stock,Strategy,Side,Qty,Entry,Exit,Reason,Gross_INR,Kotak_Friction_INR,Net_PnL_INR,Max_DD_INR
+2026-09-24 13:27:33,SBIN.NS,TW_TUNED,SHORT,94,985.9,980.63,Limit TP,495.51,33.24,462.27,-42.67
