@@ -69,8 +69,6 @@ def sync_trade_to_github(strat_key, trade_data):
     df_combined = pd.concat([df_existing, df_new], ignore_index=True) if not df_existing.empty else df_new
     csv_str = df_combined.to_csv(index=False)
     
-    # CRITICAL FIX: Local saving removed entirely to prevent Streamlit infinite-reload loop.
-    
     if not GITHUB_TOKEN or not REPO_NAME: return
     
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
@@ -157,7 +155,7 @@ class UnifiedIndianEngine:
         auto_square_off_time = now_ist.replace(hour=15, minute=15, second=0, microsecond=0)
         
         if not (market_open <= now_ist <= market_close):
-            return # Engine sleeps if market is closed
+            return 
 
         self.check_daily_reset(now_ist.date())
         is_closing_time = now_ist >= auto_square_off_time
@@ -195,22 +193,22 @@ class UnifiedIndianEngine:
 
             if macro_trend == "UP" and c_curr['low'] <= c_curr['Lower_BB']: signals["AMTE"] = "LONG"
             elif macro_trend == "DOWN" and c_curr['high'] >= c_curr['Upper_BB']: signals["AMTE"] = "SHORT"
+            
             if (c_prev['SHULL_2'] >= c_prev['MHULL']) and (c_curr['SHULL_2'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']): signals["TW_ORIG"] = "LONG"
             elif (c_prev['SHULL_2'] <= c_prev['MHULL']) and (c_curr['SHULL_2'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']): signals["TW_ORIG"] = "SHORT"
+            
             if (c_prev['SHULL_3'] >= c_prev['MHULL']) and (c_curr['SHULL_3'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "LONG"
             elif (c_prev['SHULL_3'] <= c_prev['MHULL']) and (c_curr['SHULL_3'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA100']) and (c_curr['ATR'] > c_curr['ATR_50']): signals["TW_TUNED"] = "SHORT"
 
             for strat in self.strats:
                 pos = self.positions[strat][pair]
                 
-                # Active Trades Processing
                 if pos['status'] == 'ACTIVE':
                     ep = pos['limit_price']
                     gross = (live_price - ep) * pos['size'] if pos['side'] == 'LONG' else (ep - live_price) * pos['size']
                     net_floating = gross - calculate_indian_costs(ep, live_price, pos['size'], pos['side'])
                     self.positions[strat][pair]['max_dd_inr'] = min(pos.get('max_dd_inr', 0.0), net_floating)
 
-                    # 3. AUTO SQUARE-OFF FORCE CLOSE
                     if is_closing_time:
                         self.close_trade(strat, pair, live_price, "EOD Square-Off")
                         continue
@@ -227,7 +225,6 @@ class UnifiedIndianEngine:
                         elif live_price <= pos['tp']: self.close_trade(strat, pair, pos['tp'], "Limit TP")
                     continue
 
-                # Block new entries if it's past 3:15 PM
                 if is_closing_time:
                     if pos['status'] == 'PENDING_ENTRY':
                         self.positions[strat][pair] = {'status': 'NONE'}
@@ -304,22 +301,24 @@ def start_background_loop(_engine):
 start_background_loop(engine)
 
 # ==========================================
-# STREAMLIT UI
+# STREAMLIT UI (WITH TRADINGVIEW MARKUPS)
 # ==========================================
 st.set_page_config(page_title="NSE Multi-Model Terminal", layout="wide")
 st.title("🇮🇳 NSE Multi-Model Terminal")
 st.markdown("---")
 
-# Added a live market status indicator using IST
 now_ist = datetime.now(IST)
 market_status = "🟢 Market Open" if now_ist.weekday() <= 4 and dtime(9, 15) <= now_ist.time() <= dtime(15, 30) else "🔴 Market Closed"
 st.caption(f"Current Time (IST): {now_ist.strftime('%Y-%m-%d %I:%M %p')} | {market_status}")
 
 st.subheader("🔎 Live Strategy Visualizer")
 ui_pair = st.selectbox("Select Asset to Monitor:", PAIRS)
-df_chart = fetch_indian_data(ui_pair, "15m", "5d")
+
+# Fetched 10 days of data so you can actually see historical markups
+df_chart = fetch_indian_data(ui_pair, "15m", "10d") 
 
 if not df_chart.empty and len(df_chart) > 50:
+    # Indicators
     df_chart['EMA100'] = df_chart['close'].ewm(span=100, adjust=False).mean()
     df_chart['MHULL'] = calculate_ehma(df_chart['close'], 16)
     df_chart['SHULL_2'] = df_chart['MHULL'].shift(2)
@@ -328,6 +327,39 @@ if not df_chart.empty and len(df_chart) > 50:
     df_chart['STD20'] = df_chart['close'].rolling(20).std()
     df_chart['Upper_BB'] = df_chart['SMA20'] + (df_chart['STD20'] * 1.5)
     df_chart['Lower_BB'] = df_chart['SMA20'] - (df_chart['STD20'] * 1.5)
+
+    tr = pd.concat([df_chart['high'] - df_chart['low'], (df_chart['high'] - df_chart['close'].shift()).abs(), (df_chart['low'] - df_chart['close'].shift()).abs()], axis=1).max(axis=1)
+    df_chart['ATR'] = tr.rolling(14).mean()
+    df_chart['ATR_50'] = df_chart['ATR'].rolling(50).mean()
+
+    # Calculate Historical Signals for TradingView Markups
+    df_chart['MHULL_p'] = df_chart['MHULL'].shift(1)
+    df_chart['SHULL_2_p'] = df_chart['SHULL_2'].shift(1)
+    df_chart['SHULL_3_p'] = df_chart['SHULL_3'].shift(1)
+
+    buy_orig = (df_chart['SHULL_2_p'] >= df_chart['MHULL_p']) & (df_chart['SHULL_2'] < df_chart['MHULL']) & (df_chart['close'] > df_chart['EMA100'])
+    sell_orig = (df_chart['SHULL_2_p'] <= df_chart['MHULL_p']) & (df_chart['SHULL_2'] > df_chart['MHULL']) & (df_chart['close'] < df_chart['EMA100'])
+
+    buy_tuned = (df_chart['SHULL_3_p'] >= df_chart['MHULL_p']) & (df_chart['SHULL_3'] < df_chart['MHULL']) & (df_chart['close'] > df_chart['EMA100']) & (df_chart['ATR'] > df_chart['ATR_50'])
+    sell_tuned = (df_chart['SHULL_3_p'] <= df_chart['MHULL_p']) & (df_chart['SHULL_3'] > df_chart['MHULL']) & (df_chart['close'] < df_chart['EMA100']) & (df_chart['ATR'] > df_chart['ATR_50'])
+
+    # Sync AMTE 1H Macro Trend
+    df_1h_ui = fetch_indian_data(ui_pair, "1h", "1mo")
+    if not df_1h_ui.empty:
+        df_1h_ui['EMA20'] = df_1h_ui['close'].ewm(span=20, adjust=False).mean()
+        df_1h_ui['EMA50'] = df_1h_ui['close'].ewm(span=50, adjust=False).mean()
+        df_1h_ui['Macro_Trend'] = np.where(df_1h_ui['EMA20'] > df_1h_ui['EMA50'], 1, -1)
+        
+        try:
+            df_chart['hour_idx'] = pd.to_datetime(df_chart.index).floor('h')
+            df_1h_ui['hour_idx'] = pd.to_datetime(df_1h_ui.index).floor('h')
+            df_1h_unique = df_1h_ui.groupby('hour_idx')['Macro_Trend'].last()
+            df_chart['Macro_Trend'] = df_chart['hour_idx'].map(df_1h_unique).ffill().fillna(0)
+        except: df_chart['Macro_Trend'] = 0
+    else: df_chart['Macro_Trend'] = 0
+
+    buy_amte = (df_chart['Macro_Trend'] == 1) & (df_chart['low'] <= df_chart['Lower_BB'])
+    sell_amte = (df_chart['Macro_Trend'] == -1) & (df_chart['high'] >= df_chart['Upper_BB'])
 
 tabs = st.tabs(["Strategy A (AMTE)", "Strategy B (TW Orig)", "Strategy C (TW Tuned)"])
 
@@ -352,14 +384,31 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Upper_BB'], line=dict(color='rgba(255, 0, 0, 0.5)', width=1, dash='dot'), name="Upper BB (1.5)"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['Lower_BB'], line=dict(color='rgba(0, 255, 0, 0.5)', width=1, dash='dot'), name="Lower BB (1.5)"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA20'], line=dict(color='rgba(255, 255, 255, 0.3)', width=1), name="SMA 20"))
+                # Plot TradingView Style Markups
+                sig_b = df_chart[buy_amte]
+                sig_s = df_chart[sell_amte]
+                fig.add_trace(go.Scatter(x=sig_b.index, y=sig_b['low'] - (sig_b['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00E676', line=dict(width=1, color='black')), name="Buy Signal"))
+                fig.add_trace(go.Scatter(x=sig_s.index, y=sig_s['high'] + (sig_s['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-down', size=12, color='#FF5252', line=dict(width=1, color='black')), name="Sell Signal"))
+
             elif strat == "TW_ORIG":
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MHULL'], line=dict(color='#0018F3', width=2), name="MHULL"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SHULL_2'], line=dict(color='#00E676', width=1.5, dash='dot'), name="SHULL (2 Lag)"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA100'], line=dict(color='#9C27B0', width=2), name="EMA 100"))
+                # Plot TradingView Style Markups
+                sig_b = df_chart[buy_orig]
+                sig_s = df_chart[sell_orig]
+                fig.add_trace(go.Scatter(x=sig_b.index, y=sig_b['low'] - (sig_b['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00E676', line=dict(width=1, color='black')), name="Buy Signal"))
+                fig.add_trace(go.Scatter(x=sig_s.index, y=sig_s['high'] + (sig_s['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-down', size=12, color='#FF5252', line=dict(width=1, color='black')), name="Sell Signal"))
+
             elif strat == "TW_TUNED":
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['MHULL'], line=dict(color='#0018F3', width=2), name="MHULL"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SHULL_3'], line=dict(color='#00E676', width=1.5, dash='dot'), name="SHULL (3 Lag)"))
                 fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA100'], line=dict(color='#9C27B0', width=2), name="EMA 100"))
+                # Plot TradingView Style Markups
+                sig_b = df_chart[buy_tuned]
+                sig_s = df_chart[sell_tuned]
+                fig.add_trace(go.Scatter(x=sig_b.index, y=sig_b['low'] - (sig_b['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00E676', line=dict(width=1, color='black')), name="Buy Signal"))
+                fig.add_trace(go.Scatter(x=sig_s.index, y=sig_s['high'] + (sig_s['ATR'].fillna(5) * 0.5), mode='markers', marker=dict(symbol='triangle-down', size=12, color='#FF5252', line=dict(width=1, color='black')), name="Sell Signal"))
 
             pos = engine.positions[strat][ui_pair]
             if pos['status'] == 'PENDING_ENTRY': 
@@ -369,7 +418,7 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
                 fig.add_hline(y=pos['tp'], line_dash="dash", line_color="#00E676", annotation_text="TP")
                 fig.add_hline(y=pos['sl'], line_dash="dash", line_color="#FF5252", annotation_text="SL")
 
-            fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10), title=f"{ui_pair} - {strat} Overlays")
+            fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10), title=f"{ui_pair} - {strat} (15m)")
             st.plotly_chart(fig, use_container_width=True)
 
         st.subheader(f"📜 {strat} Trade Ledger")
