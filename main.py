@@ -4,7 +4,7 @@ import base64
 import threading
 import warnings
 import math
-from datetime import datetime, date
+from datetime import datetime, date, time as dtime
 import pytz
 import requests
 import pandas as pd
@@ -21,6 +21,9 @@ warnings.filterwarnings('ignore')
 PAIRS = ["RELIANCE.NS", "HDFCBANK.NS", "INFY.NS", "TCS.NS", "SBIN.NS"]
 CAPITAL_INR = 100000.00
 RISK_PER_TRADE_INR = 250.00
+
+# Strict IST Timezone setup
+IST = pytz.timezone('Asia/Kolkata')
 
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.getenv("GITHUB_TOKEN", ""))
 REPO_NAME = st.secrets.get("REPO_NAME", os.getenv("REPO_NAME", ""))
@@ -43,12 +46,11 @@ def send_telegram_alert(message):
     except: pass
 
 # ==========================================
-# GITHUB PERSISTENT SYNC 
+# GITHUB PERSISTENT SYNC (NO LOCAL SAVES)
 # ==========================================
 def load_ledger_from_github(strat_key):
     filename = LEDGERS[strat_key]
     if not GITHUB_TOKEN or not REPO_NAME:
-        if os.path.exists(filename): return pd.read_csv(filename)
         return pd.DataFrame(columns=LEDGER_COLUMNS)
     
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
@@ -67,7 +69,8 @@ def sync_trade_to_github(strat_key, trade_data):
     df_combined = pd.concat([df_existing, df_new], ignore_index=True) if not df_existing.empty else df_new
     csv_str = df_combined.to_csv(index=False)
     
-    df_combined.to_csv(filename, index=False) 
+    # CRITICAL FIX: Local saving removed entirely to prevent Streamlit infinite-reload loop.
+    
     if not GITHUB_TOKEN or not REPO_NAME: return
     
     url = f"https://api.github.com/repos/{REPO_NAME}/contents/{filename}"
@@ -126,16 +129,15 @@ class UnifiedIndianEngine:
         self.pairs = pairs
         self.strats = ["AMTE", "TW_ORIG", "TW_TUNED"]
         self.positions = {s: {p: {'status': 'NONE'} for p in pairs} for s in self.strats}
-        self.current_date = date.today()
+        self.current_date = datetime.now(IST).date()
         self.daily_metrics = {s: {'trades': 0, 'pnl': 0.0} for s in self.strats}
         self.max_daily_trades = 10 
         self.max_daily_loss = -2000.00 
         self.max_concurrent = 3
 
-    def check_daily_reset(self):
-        today = date.today()
-        if today != self.current_date:
-            self.current_date = today
+    def check_daily_reset(self, today_ist):
+        if today_ist != self.current_date:
+            self.current_date = today_ist
             for s in self.strats:
                 self.daily_metrics[s] = {'trades': 0, 'pnl': 0.0}
                 for p in self.pairs:
@@ -143,7 +145,23 @@ class UnifiedIndianEngine:
                         self.positions[s][p] = {'status': 'NONE'}
 
     def process_cycle(self):
-        self.check_daily_reset()
+        now_ist = datetime.now(IST)
+        
+        # 1. MARKET DAY CHECK (No weekends)
+        if now_ist.weekday() > 4: 
+            return 
+            
+        # 2. MARKET HOURS CHECK (9:15 AM to 3:30 PM IST)
+        market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+        auto_square_off_time = now_ist.replace(hour=15, minute=15, second=0, microsecond=0)
+        
+        if not (market_open <= now_ist <= market_close):
+            return # Engine sleeps if market is closed
+
+        self.check_daily_reset(now_ist.date())
+        is_closing_time = now_ist >= auto_square_off_time
+        
         for pair in self.pairs:
             df_15m = fetch_indian_data(pair, "15m", "5d")
             df_1h = fetch_indian_data(pair, "1h", "1mo")
@@ -185,15 +203,22 @@ class UnifiedIndianEngine:
             for strat in self.strats:
                 pos = self.positions[strat][pair]
                 
+                # Active Trades Processing
                 if pos['status'] == 'ACTIVE':
                     ep = pos['limit_price']
                     gross = (live_price - ep) * pos['size'] if pos['side'] == 'LONG' else (ep - live_price) * pos['size']
                     net_floating = gross - calculate_indian_costs(ep, live_price, pos['size'], pos['side'])
                     self.positions[strat][pair]['max_dd_inr'] = min(pos.get('max_dd_inr', 0.0), net_floating)
 
-                    if (datetime.now() - pos['entry_time']).total_seconds() / 3600 >= 3:
+                    # 3. AUTO SQUARE-OFF FORCE CLOSE
+                    if is_closing_time:
+                        self.close_trade(strat, pair, live_price, "EOD Square-Off")
+                        continue
+
+                    if (now_ist - pos['entry_time']).total_seconds() / 3600 >= 3:
                         self.close_trade(strat, pair, live_price, "Timeout")
                         continue
+                        
                     if pos['side'] == 'LONG':
                         if live_price <= pos['sl']: self.close_trade(strat, pair, pos['sl'], "Stop Market")
                         elif live_price >= pos['tp']: self.close_trade(strat, pair, pos['tp'], "Limit TP")
@@ -202,9 +227,15 @@ class UnifiedIndianEngine:
                         elif live_price <= pos['tp']: self.close_trade(strat, pair, pos['tp'], "Limit TP")
                     continue
 
+                # Block new entries if it's past 3:15 PM
+                if is_closing_time:
+                    if pos['status'] == 'PENDING_ENTRY':
+                        self.positions[strat][pair] = {'status': 'NONE'}
+                    continue
+
                 if pos['status'] == 'PENDING_ENTRY':
                     if df_15m.iloc[-1]['low'] <= pos['limit_price'] if pos['side'] == 'LONG' else df_15m.iloc[-1]['high'] >= pos['limit_price']:
-                        self.positions[strat][pair].update({'status': 'ACTIVE', 'entry_time': datetime.now(), 'max_dd_inr': 0.0})
+                        self.positions[strat][pair].update({'status': 'ACTIVE', 'entry_time': now_ist, 'max_dd_inr': 0.0})
                         self.daily_metrics[strat]['trades'] += 1
                         send_telegram_alert(f"🟢 <b>[NSE {strat}] FILLED</b>\nStock: {pair}\nPrice: ₹{pos['limit_price']:,.2f}")
                     continue
@@ -231,9 +262,8 @@ class UnifiedIndianEngine:
         net_inr = gross - costs
         self.daily_metrics[strat]['pnl'] += net_inr
 
-        ist = pytz.timezone('Asia/Kolkata')
         trade_record = {
-            'Time': datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': strat, 'Side': pos['side'], 'Qty': qty,
+            'Time': datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': strat, 'Side': pos['side'], 'Qty': qty,
             'Entry': round(ep, 2), 'Exit': round(exec_price, 2), 'Reason': reason,
             'Gross_INR': round(gross, 2), 'Kotak_Friction_INR': round(costs, 2), 
             'Net_PnL_INR': round(net_inr, 2), 'Max_DD_INR': round(pos.get('max_dd_inr', 0.0), 2)
@@ -241,7 +271,6 @@ class UnifiedIndianEngine:
         sync_trade_to_github(strat, trade_record)
         self.positions[strat][pair] = {'status': 'NONE'}
         send_telegram_alert(f"🔔 <b>[NSE {strat}] CLOSED</b>\nStock: {pair}\nReason: {reason}\nNet: ₹{net_inr:,.2f}")
-
 
 # ==========================================
 # MASTER THREAD (WITH ANTI-ZOMBIE LOCK)
@@ -254,20 +283,18 @@ engine = get_engine()
 
 @st.cache_resource
 def start_background_loop(_engine):
-    # 1. STRICT LOCK: Check if the thread already exists
     for t in threading.enumerate():
         if t.name == "AlgoTraderThread":
-            return t # Abort spawning a duplicate
+            return t 
 
-    # 2. If it doesn't exist, safely spawn ONE thread
     def loop():
         time.sleep(5)
-        send_telegram_alert("🚀 <b>NSE Engine Online (Anti-Zombie Lock Active)</b>")
+        send_telegram_alert("🚀 <b>NSE Engine Online (Strict IST Market Hours Active)</b>")
         while True:
             try:
                 _engine.process_cycle()
                 time.sleep(60)
-            except:
+            except Exception as e:
                 time.sleep(60)
                 
     t = threading.Thread(target=loop, daemon=True, name="AlgoTraderThread")
@@ -282,6 +309,12 @@ start_background_loop(engine)
 st.set_page_config(page_title="NSE Multi-Model Terminal", layout="wide")
 st.title("🇮🇳 NSE Multi-Model Terminal")
 st.markdown("---")
+
+# Added a live market status indicator using IST
+now_ist = datetime.now(IST)
+market_status = "🟢 Market Open" if now_ist.weekday() <= 4 and dtime(9, 15) <= now_ist.time() <= dtime(15, 30) else "🔴 Market Closed"
+st.caption(f"Current Time (IST): {now_ist.strftime('%Y-%m-%d %I:%M %p')} | {market_status}")
+
 st.subheader("🔎 Live Strategy Visualizer")
 ui_pair = st.selectbox("Select Asset to Monitor:", PAIRS)
 df_chart = fetch_indian_data(ui_pair, "15m", "5d")
@@ -345,4 +378,3 @@ for i, strat in enumerate(["AMTE", "TW_ORIG", "TW_TUNED"]):
         else:
             st.download_button(label=f"📥 Download {strat} CSV", data=df_led.to_csv(index=False).encode('utf-8'), file_name=LEDGERS[strat], mime='text/csv')
             st.dataframe(df_led.sort_index(ascending=False), use_container_width=True)
-        
