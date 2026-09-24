@@ -1,1 +1,2 @@
 Time,Stock,Strategy,Side,Qty,Entry,Exit,Reason,Gross_INR,Kotak_Friction_INR,Net_PnL_INR,Max_DD_INR
+2026-09-24 10:17:27,HDFCBANK.NS,AMTE,LONG,124,730.04,728.02,Stop Market,-249.77,32.43,-282.2,-322.39
