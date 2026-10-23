@@ -5,3 +5,4 @@ plotly>=5.18.0
 requests>=2.31.0
 yfinance>=0.2.30
 pytz>=2024.1
+yfinance==0.2.36
