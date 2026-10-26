@@ -33,7 +33,7 @@ TW_TUNED_LEDGER = "indian_tw_tuned_ledger.csv"
 SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 
 # ==========================================
-# CORE API FETCH (YFINANCE)
+# CORE API FETCH (ROBUST YFINANCE)
 # ==========================================
 def fetch_live_data(pair, interval, limit=120):
     try:
@@ -45,11 +45,13 @@ def fetch_live_data(pair, interval, limit=120):
             df.columns = df.columns.droplevel(1)
             
         df = df.reset_index()
-        df.rename(columns={'Datetime': 'datetime', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}, inplace=True)
+        date_col = 'Datetime' if 'Datetime' in df.columns else ('Date' if 'Date' in df.columns else df.columns[0])
+        df.rename(columns={date_col: 'datetime', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}, inplace=True)
         df.set_index('datetime', inplace=True)
         
         for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+            if col in df.columns:
+                df[col] = df[col].astype(float)
             
         return df.tail(limit)
     except Exception as e: 
@@ -477,6 +479,8 @@ def render_strategy_ui(ledger_file, bot_instance, pair_key, strategy_title, tab_
 
             fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning(f"⚠️ Unable to fetch live chart data for {selected_pair}. Retrying on next cycle...")
 
         if not df_led.empty:
             st.download_button(label=f"📥 Download {strategy_title} Ledger", data=df_led.to_csv(index=False).encode('utf-8'), file_name=ledger_file, mime='text/csv')
