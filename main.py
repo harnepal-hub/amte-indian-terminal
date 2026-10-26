@@ -33,7 +33,7 @@ TW_TUNED_LEDGER = "indian_tw_tuned_ledger.csv"
 SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 
 # ==========================================
-# UNBLOCKED DIRECT NSE DATA FETCH
+# UNBLOCKED DIRECT MARKET DATA FETCH
 # ==========================================
 @st.cache_data(ttl=60)
 def fetch_live_data(pair, interval, limit=120):
@@ -420,7 +420,7 @@ master = start_master_engine()
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
 st.title("⚡ Indian Equities Multi-Strategy Terminal")
-st.caption("Active Market Guardrails Enabled: Direct JSON Feed & Unique Tab Elements.")
+st.caption("Active Market Guardrails Enabled: Direct Feed & Reliable Paper Trading Active.")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
