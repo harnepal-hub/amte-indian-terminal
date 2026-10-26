@@ -9,6 +9,7 @@ import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import yfinance as yf
+requests = __import__('requests')
 
 warnings.filterwarnings('ignore')
 
@@ -33,12 +34,16 @@ TW_TUNED_LEDGER = "indian_tw_tuned_ledger.csv"
 SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 
 # ==========================================
-# CORE API FETCH (ROBUST YFINANCE)
+# CLOUD-BYPASS SESSION FOR YFINANCE
 # ==========================================
+session = requests.Session()
+session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+@st.cache_data(ttl=60)
 def fetch_live_data(pair, interval, limit=120):
     try:
         valid_interval = "60m" if interval == "1h" else "15m"
-        df = yf.download(tickers=pair, interval=valid_interval, period="5d", progress=False)
+        df = yf.download(tickers=pair, interval=valid_interval, period="5d", progress=False, session=session)
         if df.empty: return pd.DataFrame()
         
         if isinstance(df.columns, pd.MultiIndex):
@@ -413,7 +418,7 @@ master = start_master_engine()
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
 st.title("⚡ Indian Equities Multi-Strategy Terminal")
-st.caption("Active Market Guardrails Enabled: No out-of-hours trades & AMTE anti-spam cooldowns active.")
+st.caption("Active Market Guardrails Enabled: Cloud Session Bypass & Anti-Spam Cooldowns Active.")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
