@@ -38,8 +38,6 @@ SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 @st.cache_data(ttl=60)
 def fetch_live_data(pair, interval, limit=120):
     try:
-        symbol = pair.replace(".NS", "")
-        # Fetch direct chart JSON from unblocked public endpoint
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}?interval=15m&range=5d"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         resp = requests.get(url, headers=headers, timeout=5)
@@ -64,7 +62,6 @@ def fetch_live_data(pair, interval, limit=120):
     except Exception:
         pass
         
-    # Fallback synthetic price generator to keep UI and bot fully active if API hiccups
     dates = pd.date_range(end=datetime.now(), periods=limit, freq='15min')
     base_price = 1000.0 if "HDFCBANK" in pair else 2000.0
     np.random.seed(len(pair))
@@ -87,10 +84,8 @@ def log_trade(filename, trade_data):
         df_new.to_csv(filename, index=False)
 
 def is_market_open():
-    """Strictly checks Indian market hours (9:15 AM to 3:30 PM IST, Monday-Friday)"""
     now = datetime.now()
-    if now.weekday() >= 5: # Weekend check
-        return False
+    if now.weekday() >= 5: return False
     current_time = now.time()
     return dtime(9, 15) <= current_time <= dtime(15, 30)
 
@@ -129,7 +124,7 @@ def apply_trailing_stop(pos, live_price):
         if pos['sl'] > ep: pos['sl'] = ep * (1 - MAKER_FEE)
 
 # ==========================================
-# STRATEGY 1: AMTE BB PULLBACK (WITH COOLDOWN)
+# STRATEGY 1: AMTE BB PULLBACK
 # ==========================================
 class AMTEBot:
     def __init__(self, pairs):
@@ -160,8 +155,7 @@ class AMTEBot:
         active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
 
         for pair in self.pairs:
-            if datetime.now() < self.cooldowns[pair]:
-                continue
+            if datetime.now() < self.cooldowns[pair]: continue
 
             df_macro = fetch_live_data(pair, "1h", 100)
             df_micro = fetch_live_data(pair, "15m", 100)
@@ -227,10 +221,7 @@ class AMTEBot:
                 self.place_limit(pair, 'SHORT', lp, sl, tp, risk_usd / max(0.0001, (sl - lp)))
 
     def place_limit(self, pair, side, lp, sl, tp, size):
-        self.positions[pair] = {
-            'status': 'PENDING_ENTRY', 'side': side, 'limit_price': lp, 'sl': sl, 'tp': tp, 
-            'original_sl': sl, 'size': size, 'max_dd_inr': 0.0
-        }
+        self.positions[pair] = {'status': 'PENDING_ENTRY', 'side': side, 'limit_price': lp, 'sl': sl, 'tp': tp, 'original_sl': sl, 'size': size, 'max_dd_inr': 0.0}
 
     def activate_trade(self, pair):
         self.positions[pair].update({'status': 'ACTIVE', 'entry_time': datetime.now(), 'max_dd_inr': 0.0})
@@ -245,8 +236,7 @@ class AMTEBot:
         net_inr = (gross - fees) * USDT_INR_RATE
         self.daily_pnl_inr += net_inr
         
-        if "Stop" in reason:
-            self.cooldowns[pair] = datetime.now() + pd.Timedelta(minutes=60)
+        if "Stop" in reason: self.cooldowns[pair] = datetime.now() + pd.Timedelta(minutes=60)
 
         log_trade(AMTE_LEDGER, {
             'Time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': 'AMTE', 'Side': pos['side'],
@@ -312,7 +302,7 @@ class GeneralBotEngine:
                 else:
                     buy_signal = (c_prev['SHULL'] >= c_prev['MHULL']) and (c_curr['SHULL'] < c_curr['MHULL']) and (c_curr['close'] > c_curr['EMA50'])
                     sell_signal = (c_prev['SHULL'] <= c_prev['MHULL']) and (c_curr['SHULL'] > c_curr['MHULL']) and (c_curr['close'] < c_curr['EMA50'])
-            else: # SUPERTREND
+            else:
                 hl2 = (df['high'] + df['low']) / 2
                 upper_band = hl2 + (3.0 * df['ATR'])
                 lower_band = hl2 - (3.0 * df['ATR'])
@@ -430,7 +420,7 @@ master = start_master_engine()
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
 st.title("⚡ Indian Equities Multi-Strategy Terminal")
-st.caption("Active Market Guardrails Enabled: Direct JSON Feed & Cloud Bypass Active.")
+st.caption("Active Market Guardrails Enabled: Direct JSON Feed & Unique Tab Elements.")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
@@ -495,15 +485,15 @@ def render_strategy_ui(ledger_file, bot_instance, pair_key, strategy_title, tab_
                 fig.add_hline(y=pos['sl'], line_dash="dash", line_color="#FF5252", annotation_text=f"SL: ₹{pos['sl']:,.2f}")
 
             fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_{pair_key}")
         else:
-            st.warning(f"⚠️ Unable to fetch live chart data for {selected_pair}. Retrying on next cycle...")
+            st.warning(f"⚠️ Unable to fetch live chart data for {selected_pair}.")
 
         if not df_led.empty:
-            st.download_button(label=f"📥 Download {strategy_title} Ledger", data=df_led.to_csv(index=False).encode('utf-8'), file_name=ledger_file, mime='text/csv')
+            st.download_button(label=f"📥 Download {strategy_title} Ledger", data=df_led.to_csv(index=False).encode('utf-8'), file_name=ledger_file, mime='text/csv', key=f"dl_{pair_key}")
             st.dataframe(df_led.sort_index(ascending=False), use_container_width=True)
 
-render_strategy_ui(AMTE_LEDGER, master.amte, "p_amte", "AMTE BB Pullback", tab1)
-render_strategy_ui(TW_LEDGER, master.tw_orig, "p_tw", "TW Original", tab2)
-render_strategy_ui(TW_TUNED_LEDGER, master.tw_tuned, "p_tuned", "TW Fine-Tuned", tab3)
-render_strategy_ui(SUPERTREND_LEDGER, master.supertrend, "p_st", "Supertrend Momentum", tab4)
+render_strategy_ui(AMTE_LEDGER, master.amte, "sel_amte", "AMTE BB Pullback", tab1)
+render_strategy_ui(TW_LEDGER, master.tw_orig, "sel_tw", "TW Original", tab2)
+render_strategy_ui(TW_TUNED_LEDGER, master.tw_tuned, "sel_tuned", "TW Fine-Tuned", tab3)
+render_strategy_ui(SUPERTREND_LEDGER, master.supertrend, "sel_st", "Supertrend Momentum", tab4)
