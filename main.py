@@ -33,12 +33,11 @@ TW_TUNED_LEDGER = "indian_tw_tuned_ledger.csv"
 SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 
 # ==========================================
-# 5-MINUTE DIRECT MARKET DATA FETCH (IST CONVERTED)
+# 5-MINUTE DIRECT MARKET DATA FETCH (IST CLEANED)
 # ==========================================
 @st.cache_data(ttl=30)
 def fetch_live_data(pair, interval="5m", limit=120):
     try:
-        # Requesting 5-minute intraday data candles
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}?interval={interval}&range=5d"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         resp = requests.get(url, headers=headers, timeout=5)
@@ -59,9 +58,12 @@ def fetch_live_data(pair, interval="5m", limit=120):
             })
             df.dropna(subset=['close'], inplace=True)
             
-            # Shift timestamps to Indian Standard Time (IST -> UTC + 5:30) so 9:30 AM appears correctly
+            # Shift timestamps to Indian Standard Time (IST -> UTC + 5:30)
             df['datetime'] = df['datetime'] + pd.Timedelta(hours=5, minutes=30)
             df.set_index('datetime', inplace=True)
+            
+            # Filter to keep only active Indian Market hours (9:15 AM to 3:30 PM IST) to eliminate overnight gap lines
+            df = df.between_time('09:15', '15:30')
             return df.tail(limit)
     except Exception:
         pass
@@ -413,7 +415,7 @@ class MasterEngine:
                     self.supertrend.process_cycle()
                 except Exception:
                     pass
-            time.sleep(30) # Scans every 30 seconds for 5m precision
+            time.sleep(30)
 
 @st.cache_resource
 def start_master_engine():
@@ -429,7 +431,7 @@ master = start_master_engine()
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
 st.title("⚡ Indian Equities Multi-Strategy Terminal (5-Minute Data)")
-st.caption(f"Active 5m Feed & IST Timezone Active. Current IST Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"Active 5m Clean Feed & IST Timezone Active. Current IST Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
@@ -483,7 +485,12 @@ def render_strategy_ui(ledger_file, bot_instance, pair_key, strategy_title, tab_
         
         if not df_chart.empty:
             fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['open'], high=df_chart['high'], low=df_chart['low'], close=df_chart['close'], name="5m Candles"))
+            # Candlestick chart with categorical x-axis type to ignore overnight time gaps and missing candles completely
+            fig.add_trace(go.Candlestick(
+                x=df_chart.index.strftime('%Y-%m-%d %H:%M'), 
+                open=df_chart['open'], high=df_chart['high'], low=df_chart['low'], close=df_chart['close'], 
+                name="5m Candles"
+            ))
             
             pos = bot_instance.positions[selected_pair]
             if pos['status'] == 'PENDING_ENTRY':
@@ -493,7 +500,13 @@ def render_strategy_ui(ledger_file, bot_instance, pair_key, strategy_title, tab_
                 fig.add_hline(y=pos['tp'], line_dash="dash", line_color="#00E676", annotation_text=f"TP: ₹{pos['tp']:,.2f}")
                 fig.add_hline(y=pos['sl'], line_dash="dash", line_color="#FF5252", annotation_text=f"SL: ₹{pos['sl']:,.2f}")
 
-            fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=20, b=10))
+            fig.update_layout(
+                height=400, 
+                template="plotly_dark", 
+                xaxis_rangeslider_visible=False, 
+                xaxis=dict(type='category', nticks=10),
+                margin=dict(l=10, r=10, t=20, b=10)
+            )
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{pair_key}")
         else:
             st.warning(f"⚠️ Unable to fetch live chart data for {selected_pair}.")
