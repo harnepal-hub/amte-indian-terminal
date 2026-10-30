@@ -3,7 +3,7 @@ import time
 import math
 import threading
 import warnings
-from datetime import datetime, date, time as dtime
+from datetime import datetime, date, time as dtime, timedelta
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -83,9 +83,17 @@ def log_trade(filename, trade_data):
     else:
         df_new.to_csv(filename, index=False)
 
+def get_ist_now():
+    """Converts UTC server time to Indian Standard Time (IST)"""
+    utc_now = datetime.utcnow()
+    ist_now = utc_now + timedelta(hours=5, minutes=30)
+    return ist_now
+
 def is_market_open():
-    now = datetime.now()
-    if now.weekday() >= 5: return False
+    """Strictly checks Indian market hours (9:15 AM to 3:30 PM IST, Monday-Friday)"""
+    now = get_ist_now()
+    if now.weekday() >= 5: # Weekend check
+        return False
     current_time = now.time()
     return dtime(9, 15) <= current_time <= dtime(15, 30)
 
@@ -131,7 +139,7 @@ class AMTEBot:
         self.pairs = pairs
         self.positions = {pair: {'status': 'NONE'} for pair in pairs}
         self.cooldowns = {pair: datetime.min for pair in pairs} 
-        self.current_date = date.today()
+        self.current_date = get_ist_now().date()
         self.daily_trades = 0
         self.daily_pnl_inr = 0.0
         self.max_daily_trades = 10 
@@ -139,7 +147,7 @@ class AMTEBot:
         self.max_concurrent = 2
 
     def check_daily_reset(self):
-        today = date.today()
+        today = get_ist_now().date()
         if today != self.current_date:
             self.current_date = today
             self.daily_trades = 0
@@ -239,7 +247,7 @@ class AMTEBot:
         if "Stop" in reason: self.cooldowns[pair] = datetime.now() + pd.Timedelta(minutes=60)
 
         log_trade(AMTE_LEDGER, {
-            'Time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': 'AMTE', 'Side': pos['side'],
+            'Time': get_ist_now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': 'AMTE', 'Side': pos['side'],
             'Entry': round(ep, 2), 'Exit': round(exit_p, 2), 'Reason': reason,
             'Gross_INR': round(gross, 2), 'Friction_INR': round(fees, 2),
             'Net_PnL_INR': round(net_inr, 2), 'Max_DD_INR': round(pos.get('max_dd_inr', 0.0), 2)
@@ -254,7 +262,7 @@ class GeneralBotEngine:
         self.pairs = pairs
         self.strategy_type = strategy_type
         self.positions = {pair: {'status': 'NONE'} for pair in pairs}
-        self.current_date = date.today()
+        self.current_date = get_ist_now().date()
         self.daily_trades = 0
         self.daily_pnl_inr = 0.0
         self.max_daily_trades = 10 
@@ -266,7 +274,7 @@ class GeneralBotEngine:
         else: self.ledger = SUPERTREND_LEDGER
 
     def check_daily_reset(self):
-        today = date.today()
+        today = get_ist_now().date()
         if today != self.current_date:
             self.current_date = today
             self.daily_trades = 0
@@ -377,7 +385,7 @@ class GeneralBotEngine:
         self.daily_pnl_inr += net_inr
 
         log_trade(self.ledger, {
-            'Time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': self.strategy_type, 'Side': pos['side'],
+            'Time': get_ist_now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': self.strategy_type, 'Side': pos['side'],
             'Entry': round(ep, 2), 'Exit': round(exit_p, 2), 'Reason': reason,
             'Gross_INR': round(gross, 2), 'Friction_INR': round(fees, 2),
             'Net_PnL_INR': round(net_inr, 2), 'Max_DD_INR': round(pos.get('max_dd_inr', 0.0), 2)
@@ -420,7 +428,7 @@ master = start_master_engine()
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
 st.title("⚡ Indian Equities Multi-Strategy Terminal")
-st.caption("Active Market Guardrails Enabled: Direct Feed & Reliable Paper Trading Active.")
+st.caption(f"Active Market Guardrails Enabled (IST Timezone Active). Current IST Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
