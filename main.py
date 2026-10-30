@@ -13,7 +13,7 @@ requests = __import__('requests')
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# GLOBAL CONFIGURATION (5-MIN INTERVALS)
+# GLOBAL CONFIGURATION (REVERTED TO 15-MIN PROVEN SETUP)
 # ==========================================
 PAIRS = [
     "HDFCBANK.NS", "INFY.NS", "RELIANCE.NS", "TCS.NS", "SBIN.NS",
@@ -33,10 +33,10 @@ TW_TUNED_LEDGER = "indian_tw_tuned_ledger.csv"
 SUPERTREND_LEDGER = "indian_supertrend_ledger.csv"
 
 # ==========================================
-# 5-MINUTE DIRECT MARKET DATA FETCH (IST CLEANED)
+# 15-MINUTE PROVEN DATA FETCH (IST CLEANED)
 # ==========================================
-@st.cache_data(ttl=30)
-def fetch_live_data(pair, interval="5m", limit=120):
+@st.cache_data(ttl=60)
+def fetch_live_data(pair, interval="15m", limit=120):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{pair}?interval={interval}&range=5d"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -58,22 +58,20 @@ def fetch_live_data(pair, interval="5m", limit=120):
             })
             df.dropna(subset=['close'], inplace=True)
             
-            # Shift timestamps to Indian Standard Time (IST -> UTC + 5:30)
+            # Shift to IST
             df['datetime'] = df['datetime'] + pd.Timedelta(hours=5, minutes=30)
             df.set_index('datetime', inplace=True)
-            
-            # Filter to keep only active Indian Market hours (9:15 AM to 3:30 PM IST) to eliminate overnight gap lines
             df = df.between_time('09:15', '15:30')
             return df.tail(limit)
     except Exception:
         pass
         
-    dates = pd.date_range(end=datetime.now(), periods=limit, freq='5min')
+    dates = pd.date_range(end=datetime.now(), periods=limit, freq='15min')
     base_price = 1000.0 if "HDFCBANK" in pair else 2000.0
     np.random.seed(len(pair))
-    prices = base_price + np.cumsum(np.random.randn(limit) * 2)
+    prices = base_price + np.cumsum(np.random.randn(limit) * 5)
     df_fallback = pd.DataFrame({
-        'open': prices - 1, 'high': prices + 3, 'low': prices - 3, 'close': prices, 'volume': 50000
+        'open': prices - 2, 'high': prices + 5, 'low': prices - 5, 'close': prices, 'volume': 100000
     }, index=dates)
     return df_fallback
 
@@ -135,7 +133,7 @@ def apply_trailing_stop(pos, live_price):
         if pos['sl'] > ep: pos['sl'] = ep * (1 - MAKER_FEE)
 
 # ==========================================
-# STRATEGY 1: AMTE BB PULLBACK (5-MIN)
+# STRATEGY 1: AMTE BB PULLBACK (15-MIN)
 # ==========================================
 class AMTEBot:
     def __init__(self, pairs):
@@ -169,7 +167,7 @@ class AMTEBot:
             if datetime.now() < self.cooldowns[pair]: continue
 
             df_macro = fetch_live_data(pair, "60m", 100)
-            df_micro = fetch_live_data(pair, "5m", 120)
+            df_micro = fetch_live_data(pair, "15m", 120)
             if df_macro.empty or df_micro.empty: continue
 
             df_macro['EMA_20'] = df_macro['close'].ewm(span=20, adjust=False).mean()
@@ -197,7 +195,7 @@ class AMTEBot:
 
                 apply_trailing_stop(pos, live_price)
 
-                if (datetime.now() - pos['entry_time']).total_seconds() / 3600 >= 2:
+                if (datetime.now() - pos['entry_time']).total_seconds() / 3600 >= 4:
                     if (floating_usd - floating_fees) > 0:
                         self.close_trade(pair, live_price, "Timeout (Profit)", "TAKER")
                         continue
@@ -224,11 +222,11 @@ class AMTEBot:
             atr = c_micro['ATR']
             if is_bull and live_price > c_micro['BBL']:
                 lp = c_micro['BBL']
-                sl, tp = lp - (atr * 1.5), lp + (atr * 3.0)
+                sl, tp = lp - (atr * 2.0), lp + (atr * 4.0)
                 self.place_limit(pair, 'LONG', lp, sl, tp, risk_usd / max(0.0001, (lp - sl)))
             elif is_bear and live_price < c_micro['BBU']:
                 lp = c_micro['BBU']
-                sl, tp = lp + (atr * 1.5), lp - (atr * 3.0)
+                sl, tp = lp + (atr * 2.0), lp - (atr * 4.0)
                 self.place_limit(pair, 'SHORT', lp, sl, tp, risk_usd / max(0.0001, (sl - lp)))
 
     def place_limit(self, pair, side, lp, sl, tp, size):
@@ -247,7 +245,7 @@ class AMTEBot:
         net_inr = (gross - fees) * USDT_INR_RATE
         self.daily_pnl_inr += net_inr
         
-        if "Stop" in reason: self.cooldowns[pair] = datetime.now() + pd.Timedelta(minutes=30)
+        if "Stop" in reason: self.cooldowns[pair] = datetime.now() + pd.Timedelta(minutes=60)
 
         log_trade(AMTE_LEDGER, {
             'Time': get_ist_now().strftime("%Y-%m-%d %H:%M:%S"), 'Stock': pair, 'Strategy': 'AMTE', 'Side': pos['side'],
@@ -258,7 +256,7 @@ class AMTEBot:
         self.positions[pair] = {'status': 'NONE'}
 
 # ==========================================
-# STRATEGY 2, 3 & 4 (5-MIN GENERAL ENGINES)
+# STRATEGY 2, 3 & 4 (15-MIN GENERAL ENGINES)
 # ==========================================
 class GeneralBotEngine:
     def __init__(self, pairs, strategy_type):
@@ -293,7 +291,7 @@ class GeneralBotEngine:
         active_count = sum(1 for p in self.positions.values() if p['status'] == 'ACTIVE')
 
         for pair in self.pairs:
-            df = fetch_live_data(pair, "5m", 120)
+            df = fetch_live_data(pair, "15m", 120)
             if df.empty or len(df) < 55: continue
 
             df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
@@ -341,7 +339,7 @@ class GeneralBotEngine:
 
                 apply_trailing_stop(pos, live_price)
 
-                if (datetime.now() - pos['entry_time']).total_seconds() / 3600 >= 3:
+                if (datetime.now() - pos['entry_time']).total_seconds() / 3600 >= 6:
                     if (floating_usd - floating_fees) > 0:
                         self.close_trade(pair, live_price, "Timeout (Profit)", "TAKER")
                         continue
@@ -366,12 +364,12 @@ class GeneralBotEngine:
             risk_usd = RISK_PER_TRADE_INR / USDT_INR_RATE
 
             if buy_signal:
-                sl = q_low if (not np.isnan(q_low) and q_low < live_price) else (live_price - atr * 1.5)
-                tp = p_high if (not np.isnan(p_high) and p_high > live_price) else (live_price + atr * 3.0)
+                sl = q_low if (not np.isnan(q_low) and q_low < live_price) else (live_price - atr * 1.8)
+                tp = p_high if (not np.isnan(p_high) and p_high > live_price) else (live_price + atr * 3.6)
                 self.positions[pair] = {'status': 'PENDING_ENTRY', 'side': 'LONG', 'limit_price': live_price, 'sl': sl, 'tp': tp, 'original_sl': sl, 'size': risk_usd / max(0.0001, (live_price - sl)), 'max_dd_inr': 0.0}
             elif sell_signal:
-                sl = q_high if (not np.isnan(q_high) and q_high > live_price) else (live_price + atr * 1.5)
-                tp = p_low if (not np.isnan(p_low) and p_low < live_price) else (live_price - atr * 3.0)
+                sl = q_high if (not np.isnan(q_high) and q_high > live_price) else (live_price + atr * 1.8)
+                tp = p_low if (not np.isnan(p_low) and p_low < live_price) else (live_price - atr * 3.6)
                 self.positions[pair] = {'status': 'PENDING_ENTRY', 'side': 'SHORT', 'limit_price': live_price, 'sl': sl, 'tp': tp, 'original_sl': sl, 'size': risk_usd / max(0.0001, (sl - live_price)), 'max_dd_inr': 0.0}
 
     def activate_trade(self, pair):
@@ -415,7 +413,7 @@ class MasterEngine:
                     self.supertrend.process_cycle()
                 except Exception:
                     pass
-            time.sleep(30)
+            time.sleep(60)
 
 @st.cache_resource
 def start_master_engine():
@@ -430,8 +428,8 @@ master = start_master_engine()
 # STREAMLIT UI
 # ==========================================
 st.set_page_config(page_title="Multi-Strategy Equities Terminal", layout="wide")
-st.title("⚡ Indian Equities Multi-Strategy Terminal (5-Minute Data)")
-st.caption(f"Active 5m Clean Feed & IST Timezone Active. Current IST Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.title("⚡ Indian Equities Multi-Strategy Terminal (15-Minute Proven Setup)")
+st.caption(f"Active 15m Feed & IST Timezone Active. Current IST Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "⚡ Strategy A: AMTE", 
@@ -479,17 +477,16 @@ def render_strategy_ui(ledger_file, bot_instance, pair_key, strategy_title, tab_
             st.dataframe(pd.DataFrame(live_trades), use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.subheader(f"📊 {strategy_title} 5-Minute Chart & Routing")
+        st.subheader(f"📊 {strategy_title} 15-Minute Chart & Routing")
         selected_pair = st.selectbox(f"Select Asset:", PAIRS, key=pair_key)
-        df_chart = fetch_live_data(selected_pair, "5m", 120)
+        df_chart = fetch_live_data(selected_pair, "15m", 120)
         
         if not df_chart.empty:
             fig = go.Figure()
-            # Candlestick chart with categorical x-axis type to ignore overnight time gaps and missing candles completely
             fig.add_trace(go.Candlestick(
                 x=df_chart.index.strftime('%Y-%m-%d %H:%M'), 
                 open=df_chart['open'], high=df_chart['high'], low=df_chart['low'], close=df_chart['close'], 
-                name="5m Candles"
+                name="15m Candles"
             ))
             
             pos = bot_instance.positions[selected_pair]
